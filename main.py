@@ -26,17 +26,20 @@ board = chess.Board()
 board_size = 600  # Keep the board size fixed
 extra_space = 150  # Add extra space at the bottom for information
 size = (board_size, board_size + extra_space)
-screen = pygame.display.set_mode(size)
+screen = pygame.display.set_mode(size, pygame.DOUBLEBUF)
 pygame.display.set_caption('Chess Opening')
 
 # Stockfish setup
 stockfish_path = r"C:\Users\silvan.hegner\Downloads\stockfish-windows-x86-64-avx2\stockfish\stockfish-windows-x86-64-avx2.exe"  # Set the correct path to your Stockfish binary
 stockfish = Stockfish(stockfish_path)
-stockfish.set_skill_level(8)  # You can adjust the skill level
+stockfish.set_skill_level(7)  # You can adjust the skill level
 
-# Calculate square size based on the board size (assuming 5% margin for the coordinates)
-margin = (board_size - board_size * 0.95) / 2
-square_size = board_size * 0.95 // 8
+# Use a consistent scaling factor for both margin and square size calculation
+scaling_factor = 0.93  # Adjust this factor to align the board as needed
+
+# Recalculate margin and square size
+margin = (board_size - board_size * scaling_factor) / 2
+square_size = (board_size * scaling_factor) / 8
 
 white_eval = None
 black_eval = None
@@ -44,12 +47,17 @@ black_eval = None
 def analyze_with_stockfish():
     global white_eval, black_eval
     stockfish.set_fen_position(board.fen())
-    evaluation = stockfish.get_evaluation()
+    
+    try:
+        evaluation = stockfish.get_evaluation()
+    except Exception as e:
+        print(f"Error during Stockfish evaluation: {e}")
+        evaluation = {'type': 'cp', 'value': 0}
 
-    if evaluation['type'] == 'cp':
+    if 'type' in evaluation and evaluation['type'] == 'cp':
         white_eval = evaluation['value'] / 100.0
         black_eval = -white_eval
-    elif evaluation['type'] == 'mate':
+    elif 'type' in evaluation and evaluation['type'] == 'mate':
         if evaluation['value'] > 0:
             white_eval = f"M{evaluation['value']}"
             black_eval = f"M{-evaluation['value']}"
@@ -60,23 +68,36 @@ def analyze_with_stockfish():
         white_eval = 0.0  # Neutral value for initial load
         black_eval = 0.0
 
-    # Log the evaluation
-    print(f"Stockfish Evaluation: White: {white_eval}, Black: {black_eval}")
+def analyze_with_stockfish_and_render():
+    analyze_with_stockfish()
+    global board_surface
+    board_surface = render_board_surface()
 
-def analyze_position():
-    # Run the evaluation in a separate thread
-    threading.Thread(target=analyze_with_stockfish).start()
+def handle_stockfish_move():
+    def move_and_evaluate():
+        stockfish.set_fen_position(board.fen())
+        best_move = stockfish.get_best_move()
+        if best_move:
+            board.push_uci(best_move)
+            analyze_with_stockfish()
 
-# Function to draw the board
-def draw_board(selected_square=None, dragging_piece=None, mouse_pos=None, possible_moves=None, next_move_hint=None):
-    # Convert SVG to PNG and load it into pygame
+    # If it's black's turn, let Stockfish play in a separate thread
+    if board.turn == chess.BLACK:
+        threading.Thread(target=move_and_evaluate).start()
+
+# Pre-render the board surface
+def render_board_surface():
     svg_data = chess.svg.board(board, size=board_size, coordinates=True)
     png_data = svg2png(bytestring=svg_data.encode('utf-8'))
     image = pygame.image.load(io.BytesIO(png_data))
+    return pygame.transform.scale(image, (int(board_size), int(board_size)))
 
-    # Scale and draw the image to the screen
-    image = pygame.transform.scale(image, (int(board_size), int(board_size)))
-    screen.blit(image, (0, 0))
+board_surface = render_board_surface()
+
+# Function to draw the board
+def draw_board(selected_square=None, dragging_piece=None, mouse_pos=None, possible_moves=None):
+    # Draw the cached board surface
+    screen.blit(board_surface, (0, 0))
 
     # Draw possible moves if a square is selected
     if possible_moves is not None:
@@ -87,15 +108,14 @@ def draw_board(selected_square=None, dragging_piece=None, mouse_pos=None, possib
             center_y = int(margin + target_row * square_size + square_size / 2)
             pygame.draw.circle(screen, (128, 128, 128), (center_x, center_y), square_size // 6)
 
-    # Draw the dragging piece if dragging
     if dragging_piece is not None and mouse_pos is not None:
-        piece = board.piece_at(dragging_piece)
-        if piece:
-            piece_svg = chess.svg.piece(piece, size=square_size)
-            piece_png = svg2png(bytestring=piece_svg.encode('utf-8'))
-            piece_image = pygame.image.load(io.BytesIO(piece_png))
-            piece_image = pygame.transform.scale(piece_image, (square_size, square_size))
-            screen.blit(piece_image, (mouse_pos[0] - square_size // 2, mouse_pos[1] - square_size // 2))
+       piece = board.piece_at(dragging_piece)
+       if piece:
+           piece_svg = chess.svg.piece(piece, size=square_size)
+           piece_png = svg2png(bytestring=piece_svg.encode('utf-8'))
+           piece_image = pygame.image.load(io.BytesIO(piece_png))
+           piece_image = pygame.transform.scale(piece_image, (int(square_size), int(square_size)))
+           screen.blit(piece_image, (mouse_pos[0] - square_size // 2, mouse_pos[1] - square_size // 2))
 
     # Add space for additional information at the bottom
     pygame.draw.rect(screen, (255, 255, 255), pygame.Rect(0, board_size, size[0], extra_space))
@@ -155,6 +175,7 @@ def draw_board(selected_square=None, dragging_piece=None, mouse_pos=None, possib
 
     pygame.display.flip()
 
+
 # Initialize opening move index
 opening_index = 0  # Index for the current move within the selected line 
 
@@ -171,6 +192,70 @@ selected_square = None
 dragging = False
 dragged_piece = None
 possible_moves = None
+board_needs_update = False
+
+def process_player_move(uci_move):
+    global opening_index, selected_square, possible_moves, board_surface
+    
+    # Check if we are still in the opening sequence
+    if opening_index < len(selected_line['moves']):
+        expected_move = selected_line['moves'][opening_index]
+
+        # If the player's move matches the expected move in the opening sequence
+        if uci_move == expected_move:
+            board.push(chess.Move.from_uci(uci_move))
+            opening_index += 1
+            
+            # Clear selection after a valid move
+            selected_square = None
+            possible_moves = None
+
+            # Check if the opening sequence is finished
+            if opening_index < len(selected_line['moves']):
+                # Play the next move in the opening line automatically
+                expected_move = selected_line['moves'][opening_index]
+                board.push_uci(expected_move)
+                opening_index += 1
+
+                # Analyze the new position after the move in a separate thread
+                threading.Thread(target=analyze_with_stockfish_and_render).start()
+            else:
+                # Opening sequence is finished, evaluate and re-render
+                threading.Thread(target=analyze_with_stockfish_and_render).start()
+
+                # If it's Black's turn, let Stockfish make a move immediately
+                if board.turn == chess.BLACK:
+                    best_move = stockfish.get_best_move()
+                    if best_move:
+                        board.push_uci(best_move)
+                        threading.Thread(target=analyze_with_stockfish_and_render).start()
+        else:
+            print(f"Incorrect move. Expected: {expected_move}")
+    else:
+        # If the opening sequence is over, allow normal play
+        if uci_move in [move.uci() for move in board.legal_moves]:
+            board.push(chess.Move.from_uci(uci_move))
+            threading.Thread(target=analyze_with_stockfish_and_render).start()
+            # After White's move, let Stockfish (Black) play
+            if board.turn == chess.BLACK:
+                best_move = stockfish.get_best_move()
+                if best_move:
+                    board.push_uci(best_move)
+                    threading.Thread(target=analyze_with_stockfish_and_render).start()
+
+    # Clear selection and possible moves after processing any move
+    selected_square = None
+    possible_moves = None
+
+
+
+
+dragging = False
+clicking = False  # New flag to distinguish between clicking and dragging
+dragged_piece = None
+selected_square = None
+possible_moves = None
+click_start_pos = None
 
 while running:
     mouse_pos = pygame.mouse.get_pos()
@@ -179,155 +264,79 @@ while running:
             running = False
             pygame.quit()
             sys.exit()
+
         elif event.type == pygame.MOUSEBUTTONDOWN:
+            # Start the click action
             x, y = event.pos
             if margin <= x < size[0] - margin and margin <= y < board_size - margin:
-                col = int((x - margin) * 8 // board_size)
-                row = int(7 - (y - margin) * 8 // board_size)
+                col = int((x - margin) // square_size)
+                row = int(7 - (y - margin) // square_size)
                 square = chess.square(col, row)
+
+                piece = board.piece_at(square)
                 
-                if possible_moves and square in possible_moves:
+                if piece is not None and piece.color == chess.WHITE and board.turn == chess.WHITE:
+                    # If the clicked square has a piece, select it and show possible moves
+                    selected_square = square
+                    possible_moves = [move.to_square for move in board.legal_moves if move.from_square == selected_square]
+                    clicking = True
+                    click_start_pos = (x, y)
+                elif selected_square is not None and square in possible_moves:
+                    # If a piece is selected and the clicked square is a valid move, make the move
                     move = chess.Move(selected_square, square)
-                    if move:
+                    if move in board.legal_moves:
                         uci_move = move.uci()
-                        if board.turn == chess.WHITE:
-                            # Stick to the selected line throughout the opening sequence
-                            if opening_index < len(selected_line['moves']):
-                                if uci_move == selected_line['moves'][opening_index]:
-                                    board.push(move)
-                                    opening_index += 1
-                                    selected_square = None
-                                    possible_moves = None  # Reset possible moves after a successful move
-
-                                    # Call the threaded analysis
-                                    analyze_position()
-
-                                    # Handle Stockfish's response if within the opening line
-                                    if board.turn == chess.BLACK and opening_index < len(selected_line['moves']):
-                                        expected_move = selected_line['moves'][opening_index]
-                                        board.push_uci(expected_move)
-                                        opening_index += 1
-                                        # Call the threaded analysis
-                                        analyze_position()
-                                    elif board.turn == chess.BLACK and opening_index >= len(selected_line['moves']):
-                                        # If the opening sequence is over, let Stockfish take over
-                                        stockfish.set_fen_position(board.fen())
-                                        best_move = stockfish.get_best_move()
-                                        board.push_uci(best_move)
-                                        # Call the threaded analysis
-                                        analyze_position()
-                                else:
-                                    print("Incorrect move for the opening. Expected move:", selected_line['moves'][opening_index])
-                                    # Reset the selection
-                                    selected_square = None
-                                    possible_moves = None
-                            else:
-                                # Opening sequence is done, transition to normal gameplay
-                                board.push(move)
-                                selected_square = None
-                                possible_moves = None  # Reset possible moves after a successful move
-                                # Call the threaded analysis
-                                analyze_position()
-
-                                if board.turn == chess.BLACK:
-                                    stockfish.set_fen_position(board.fen())
-                                    best_move = stockfish.get_best_move()
-                                    board.push_uci(best_move)
-                                    # Call the threaded analysis
-                                    analyze_position()
-                    else:
-                        # If move was not legal or something went wrong
+                        process_player_move(uci_move)
                         selected_square = None
                         possible_moves = None
-                elif board.piece_at(square) is not None:
-                    if board.piece_at(square).color == chess.WHITE and board.turn == chess.WHITE:
-                        dragging = True
-                        dragged_piece = square
-                        selected_square = square
-                        # Calculate possible moves for the selected piece
-                        possible_moves = [move.to_square for move in board.legal_moves if move.from_square == selected_square]
                 else:
+                    # Deselect if clicking on an empty square or invalid square
                     selected_square = None
                     possible_moves = None
+
+        elif event.type == pygame.MOUSEMOTION:
+            if clicking:
+                # Detect if movement exceeds a threshold, then switch to dragging
+                if click_start_pos and (abs(event.pos[0] - click_start_pos[0]) > 10 or abs(event.pos[1] - click_start_pos[1]) > 10):
+                    dragging = True
+                    dragged_piece = selected_square
+                    clicking = False  # Cancel clicking when dragging starts
+
         elif event.type == pygame.MOUSEBUTTONUP:
             if dragging:
+                # Calculate the destination square
                 x, y = event.pos
-                col = int((x - margin) * 8 // board_size)
-                row = int(7 - (y - margin) * 8 // board_size)
-                square = chess.square(col, row)
-                if square == dragged_piece:
-                    # Retain the selected square and show possible moves
-                    selected_square = square
-                else:
-                    move = chess.Move(dragged_piece, square)
-                    if move:
-                        uci_move = move.uci()
-                        if move in board.legal_moves:
-                            if board.turn == chess.WHITE:
-                                # Stick to the selected line throughout the opening sequence
-                                if opening_index < len(selected_line['moves']):
-                                    if uci_move == selected_line['moves'][opening_index]:
-                                        board.push(move)
-                                        opening_index += 1
-                                        selected_square = None
-                                        possible_moves = None  # Reset possible moves after a successful move
+                col = int((x - margin) // square_size)
+                row = int(7 - (y - margin) // square_size)
+                destination_square = chess.square(col, row)
 
-                                        # Call the threaded analysis
-                                        analyze_position()
+                move = chess.Move(dragged_piece, destination_square)
+                if move in board.legal_moves:
+                    uci_move = move.uci()
+                    process_player_move(uci_move)
 
-                                        # Handle Stockfish's response
-                                        if board.turn == chess.BLACK and opening_index < len(selected_line['moves']):
-                                            expected_move = selected_line['moves'][opening_index]
-                                            board.push_uci(expected_move)
-                                            opening_index += 1
-                                            # Call the threaded analysis
-                                            analyze_position()
-                                        elif board.turn == chess.BLACK and opening_index >= len(selected_line['moves']):
-                                            # If the opening sequence is over, let Stockfish take over
-                                            stockfish.set_fen_position(board.fen())
-                                            best_move = stockfish.get_best_move()
-                                            board.push_uci(best_move)
-                                            # Call the threaded analysis
-                                            analyze_position()
-                                    else:
-                                        print("Incorrect move for the opening. Expected move:", selected_line['moves'][opening_index])
-                                        # Reset the selection
-                                        selected_square = None
-                                        possible_moves = None
-                                else:
-                                    # Opening sequence is done, transition to normal gameplay
-                                    board.push(move)
-                                    selected_square = None
-                                    possible_moves = None  # Reset possible moves after a successful move
-                                    # Call the threaded analysis
-                                    analyze_position()
-
-                                    if board.turn == chess.BLACK:
-                                        stockfish.set_fen_position(board.fen())
-                                        best_move = stockfish.get_best_move()
-                                        board.push_uci(best_move)
-                                        # Call the threaded analysis
-                                        analyze_position()
-                            else:
-                                # Ignore player's moves on Black's turn
-                                pass
-                        else:
-                            selected_square = None
-                            possible_moves = None
-                    else:
-                        selected_square = None
-                        possible_moves = None
                 dragging = False
                 dragged_piece = None
-        elif event.type == pygame.MOUSEMOTION:
-            if dragging:
-                selected_square = None  # Stop highlighting the original square while dragging
 
-    # Optionally, provide next move hint
-    next_move_hint = None
-    if opening_index < len(selected_line['moves']) and board.turn == chess.WHITE:
-        next_move_hint = selected_line['moves'][opening_index]
+            elif clicking and selected_square is not None:
+                # Handle click-to-move when releasing the mouse button
+                x, y = event.pos
+                col = int((x - margin) // square_size)
+                row = int(7 - (y - margin) // square_size)
+                target_square = chess.square(col, row)
 
-    draw_board(selected_square, dragged_piece, mouse_pos, possible_moves, next_move_hint)
+                if target_square in possible_moves:
+                    move = chess.Move(selected_square, target_square)
+                    if move in board.legal_moves:
+                        uci_move = move.uci()
+                        process_player_move(uci_move)
+
+            # Reset dragging and clicking state
+            dragging = False
+            clicking = False
+            dragged_piece = None
+
+    # Draw the board and any other UI elements
+    draw_board(selected_square, dragged_piece, mouse_pos, possible_moves)
 
 pygame.quit()
