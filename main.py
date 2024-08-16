@@ -9,9 +9,12 @@ import threading
 from opening_selector import select_opening
 from openings import openings
 import random
+import time
 
 # Initialize pygame
 pygame.init()
+
+board_lock = threading.RLock()
 
 # Select opening before loading the main game
 selected_opening = select_opening(openings.keys())  # Choose from the available openings
@@ -32,7 +35,7 @@ pygame.display.set_caption('Chess Opening')
 # Stockfish setup
 stockfish_path = r"C:\Users\silvan.hegner\Downloads\stockfish-windows-x86-64-avx2\stockfish\stockfish-windows-x86-64-avx2.exe"  # Set the correct path to your Stockfish binary
 stockfish = Stockfish(stockfish_path)
-stockfish.set_skill_level(7)  # You can adjust the skill level
+stockfish.set_skill_level(12)  # You can adjust the skill level
 
 # Use a consistent scaling factor for both margin and square size calculation
 scaling_factor = 0.93  # Adjust this factor to align the board as needed
@@ -69,21 +72,47 @@ def analyze_with_stockfish():
         black_eval = 0.0
 
 def analyze_with_stockfish_and_render():
-    analyze_with_stockfish()
-    global board_surface
-    board_surface = render_board_surface()
+    with board_lock:
+        analyze_with_stockfish()
+        global board_surface
+        board_surface = render_board_surface()
+        draw_board()
 
 def handle_stockfish_move():
-    def move_and_evaluate():
-        stockfish.set_fen_position(board.fen())
-        best_move = stockfish.get_best_move()
-        if best_move:
-            board.push_uci(best_move)
-            analyze_with_stockfish()
+    with board_lock:
+        if board.turn != chess.BLACK:
+            print("It's not Black's turn, returning early.")
+            return  # Stockfish should only move for Black
 
-    # If it's black's turn, let Stockfish play in a separate thread
-    if board.turn == chess.BLACK:
-        threading.Thread(target=move_and_evaluate).start()
+        # Set the FEN position and verify
+        fen_position = board.fen()
+        stockfish.set_fen_position(fen_position)
+
+        time.sleep(1)  # Introduce a short delay
+        best_move = stockfish.get_best_move()
+
+        print(f"Stockfish best move: {best_move}")
+
+        # Ensure that Stockfish is only making moves for Black
+        if best_move and board.turn == chess.BLACK:
+            move = chess.Move.from_uci(best_move)
+
+            if move in board.legal_moves:
+                board.push(move)
+
+                global board_surface
+                board_surface = render_board_surface()
+                draw_board()
+
+                analyze_with_stockfish_and_render()
+
+                # Ensure Stockfish continues to move if it's still Black's turn
+                if board.turn == chess.BLACK:
+                    handle_stockfish_move()
+            else:
+                print(f"Illegal move by Stockfish: {best_move} in {board.fen()}")
+        else:
+            print("Stockfish did not return a valid move or attempted to move White's pieces.")
 
 # Pre-render the board surface
 def render_board_surface():
@@ -185,69 +214,69 @@ selected_square = None
 dragging = False
 dragged_piece = None
 possible_moves = None
-
-# Main game loop
-running = True
-selected_square = None
-dragging = False
-dragged_piece = None
-possible_moves = None
 board_needs_update = False
 
 def process_player_move(uci_move):
     global opening_index, selected_square, possible_moves, board_surface
-    
-    # Check if we are still in the opening sequence
-    if opening_index < len(selected_line['moves']):
-        expected_move = selected_line['moves'][opening_index]
 
-        # If the player's move matches the expected move in the opening sequence
-        if uci_move == expected_move:
-            board.push(chess.Move.from_uci(uci_move))
-            opening_index += 1
-            
-            # Clear selection after a valid move
-            selected_square = None
-            possible_moves = None
+    with board_lock:
 
-            # Check if the opening sequence is finished
-            if opening_index < len(selected_line['moves']):
-                # Play the next move in the opening line automatically
-                expected_move = selected_line['moves'][opening_index]
-                board.push_uci(expected_move)
+        if board.turn != chess.WHITE:
+            print("It's not White's turn, returning early.")
+            return  # Only process the player's move if it's White's turn
+
+        if opening_index < len(selected_line['moves']):
+            expected_move = selected_line['moves'][opening_index]
+
+            if uci_move == expected_move:
+                board.push(chess.Move.from_uci(uci_move))
                 opening_index += 1
 
-                # Analyze the new position after the move in a separate thread
-                threading.Thread(target=analyze_with_stockfish_and_render).start()
+                selected_square = None
+                possible_moves = None
+
+                # Update the board surface and render it immediately
+                board_surface = render_board_surface()
+                draw_board(selected_square)
+
+                if opening_index < len(selected_line['moves']):
+                    expected_move = selected_line['moves'][opening_index]
+                    board.push_uci(expected_move)
+                    opening_index += 1
+
+                    # Analyze the position immediately
+                    analyze_with_stockfish_and_render()
+
+                    if board.turn == chess.BLACK:
+                        print("Opening phase ended, Black's turn, triggering Stockfish...")
+                        handle_stockfish_move()
+                else:
+                    print("Opening sequence completed. Switching to Stockfish control.")
+                    if board.turn == chess.BLACK:
+                        handle_stockfish_move()
             else:
-                # Opening sequence is finished, evaluate and re-render
-                threading.Thread(target=analyze_with_stockfish_and_render).start()
-
-                # If it's Black's turn, let Stockfish make a move immediately
-                if board.turn == chess.BLACK:
-                    best_move = stockfish.get_best_move()
-                    if best_move:
-                        board.push_uci(best_move)
-                        threading.Thread(target=analyze_with_stockfish_and_render).start()
+                print(f"Incorrect move. Expected: {expected_move}, but got: {uci_move}")
         else:
-            print(f"Incorrect move. Expected: {expected_move}")
-    else:
-        # If the opening sequence is over, allow normal play
-        if uci_move in [move.uci() for move in board.legal_moves]:
-            board.push(chess.Move.from_uci(uci_move))
-            threading.Thread(target=analyze_with_stockfish_and_render).start()
-            # After White's move, let Stockfish (Black) play
-            if board.turn == chess.BLACK:
-                best_move = stockfish.get_best_move()
-                if best_move:
-                    board.push_uci(best_move)
-                    threading.Thread(target=analyze_with_stockfish_and_render).start()
+            if uci_move in [move.uci() for move in board.legal_moves]:
+                board.push(chess.Move.from_uci(uci_move))
 
-    # Clear selection and possible moves after processing any move
-    selected_square = None
-    possible_moves = None
+                # Immediate board update after move
+                board_surface = render_board_surface()
+                draw_board(selected_square)
 
+                # Analyze and move for Black immediately after the player's move
+                analyze_with_stockfish_and_render()
 
+                if board.turn == chess.BLACK:
+                    time.sleep(1)  # Introduce a delay before Stockfish makes its move
+                    best_move = stockfish.get_best_move()
+                    if best_move and board.turn == chess.BLACK:
+                        board.push_uci(best_move)
+                        analyze_with_stockfish_and_render()
+                    else:
+                        print("No valid move returned by Stockfish or Stockfish tried to move White's pieces.")
+            else:
+                print(f"Move {uci_move} is illegal. Ignoring.")
 
 
 dragging = False
