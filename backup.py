@@ -3,32 +3,49 @@ import pygame
 import chess
 import chess.svg
 import io
-import time
 from cairosvg import svg2png
-from threading import Thread
-from config import (
-    BOARD_SIZE,
-    EXTRA_SPACE,
-    SIZE,
-    MARGIN,
-    SQUARE_SIZE,
-    board,
-    stockfish,
-    BOARD_LOCK,
-    OPENING_MOVES,
-    SELECTED_LINE,
-    SELECTED_OPENING,
-    SCALING_FACTOR,
-)
+from stockfish import Stockfish
+import threading
+from opening_selector import select_opening
+from openings import openings
+import random
+import time
 
-# Initialize other global variables
-white_eval = None
-black_eval = None
-opening_index = 0  # Index for the current move within the selected line 
+# Initialize pygame
+pygame.init()
+
+board_lock = threading.RLock()
+
+# Select opening before loading the main game
+selected_opening = select_opening(openings.keys())  # Choose from the available openings
+opening_lines = openings[selected_opening]
+selected_line = random.choice(opening_lines)  # Select one random line at the start
+opening_moves = selected_line['moves']  # Get the moves of the selected line
+
+# Load chessboard
+board = chess.Board()
 
 # Set up the display
-screen = pygame.display.set_mode(SIZE, pygame.DOUBLEBUF)
+board_size = 600  # Keep the board size fixed
+extra_space = 150  # Add extra space at the bottom for information
+size = (board_size, board_size + extra_space)
+screen = pygame.display.set_mode(size, pygame.DOUBLEBUF)
 pygame.display.set_caption('Chess Opening')
+
+# Stockfish setup
+stockfish_path = r"C:\Users\silvan.hegner\Downloads\stockfish-windows-x86-64-avx2\stockfish\stockfish-windows-x86-64-avx2.exe"  # Set the correct path to your Stockfish binary
+stockfish = Stockfish(stockfish_path)
+stockfish.set_skill_level(12)  # You can adjust the skill level
+
+# Use a consistent scaling factor for both margin and square size calculation
+scaling_factor = 0.93  # Adjust this factor to align the board as needed
+
+# Recalculate margin and square size
+margin = (board_size - board_size * scaling_factor) / 2
+square_size = (board_size * scaling_factor) / 8
+
+white_eval = None
+black_eval = None
 
 def analyze_with_stockfish():
     global white_eval, black_eval
@@ -55,7 +72,7 @@ def analyze_with_stockfish():
         black_eval = 0.0
 
 def analyze_with_stockfish_and_render():
-    with BOARD_LOCK:
+    with board_lock:
         analyze_with_stockfish()
         global board_surface
         board_surface = render_board_surface()
@@ -63,10 +80,10 @@ def analyze_with_stockfish_and_render():
 
 # Pre-render the board surface
 def render_board_surface():
-    svg_data = chess.svg.board(board, size=BOARD_SIZE, coordinates=True)
+    svg_data = chess.svg.board(board, size=board_size, coordinates=True)
     png_data = svg2png(bytestring=svg_data.encode('utf-8'))
     image = pygame.image.load(io.BytesIO(png_data))
-    return pygame.transform.scale(image, (int(BOARD_SIZE), int(BOARD_SIZE)))
+    return pygame.transform.scale(image, (int(board_size), int(board_size)))
 
 board_surface = render_board_surface()
 
@@ -80,27 +97,27 @@ def draw_board(selected_square=None, dragging_piece=None, mouse_pos=None, possib
         for target_square in possible_moves:
             target_col = chess.square_file(target_square)
             target_row = 7 - chess.square_rank(target_square)
-            center_x = int(MARGIN + target_col * SQUARE_SIZE + SQUARE_SIZE / 2)
-            center_y = int(MARGIN + target_row * SQUARE_SIZE + SQUARE_SIZE / 2)
-            pygame.draw.circle(screen, (128, 128, 128), (center_x, center_y), SQUARE_SIZE // 6)
+            center_x = int(margin + target_col * square_size + square_size / 2)
+            center_y = int(margin + target_row * square_size + square_size / 2)
+            pygame.draw.circle(screen, (128, 128, 128), (center_x, center_y), square_size // 6)
 
     if dragging_piece is not None and mouse_pos is not None:
        piece = board.piece_at(dragging_piece)
        if piece:
-           piece_svg = chess.svg.piece(piece, size=SQUARE_SIZE)
+           piece_svg = chess.svg.piece(piece, size=square_size)
            piece_png = svg2png(bytestring=piece_svg.encode('utf-8'))
            piece_image = pygame.image.load(io.BytesIO(piece_png))
-           piece_image = pygame.transform.scale(piece_image, (int(SQUARE_SIZE), int(SQUARE_SIZE)))
-           screen.blit(piece_image, (mouse_pos[0] - SQUARE_SIZE // 2, mouse_pos[1] - SQUARE_SIZE // 2))
+           piece_image = pygame.transform.scale(piece_image, (int(square_size), int(square_size)))
+           screen.blit(piece_image, (mouse_pos[0] - square_size // 2, mouse_pos[1] - square_size // 2))
 
     # Add space for additional information at the bottom
-    pygame.draw.rect(screen, (255, 255, 255), pygame.Rect(0, BOARD_SIZE, SIZE[0], EXTRA_SPACE))
+    pygame.draw.rect(screen, (255, 255, 255), pygame.Rect(0, board_size, size[0], extra_space))
 
     # Draw the evaluation bar
     eval_bar_height = 30  # Height of the evaluation bar
-    eval_bar_width = BOARD_SIZE  # Full width of the board
+    eval_bar_width = board_size  # Full width of the board
     eval_bar_x = 0  # Start at the left edge
-    eval_bar_y = BOARD_SIZE  # Position it just below the board 
+    eval_bar_y = board_size  # Position it just below the board 
 
     if white_eval is None:
         white_eval_value = 0.0
@@ -130,11 +147,11 @@ def draw_board(selected_square=None, dragging_piece=None, mouse_pos=None, possib
 
     # Display the current opening and line
     font = pygame.font.Font(None, 20)
-    current_line = SELECTED_LINE['name']
-    remaining_moves = len(OPENING_MOVES) - opening_index
-    opening_text = f"Opening: {SELECTED_OPENING} - {current_line} (Moves Left: {remaining_moves})"
+    current_line = selected_line['name']
+    remaining_moves = len(opening_moves) - opening_index
+    opening_text = f"Opening: {selected_opening} - {current_line} (Moves Left: {remaining_moves})"
     opening_surface = font.render(opening_text, True, (0, 0, 0))
-    screen.blit(opening_surface, (10, BOARD_SIZE + eval_bar_height + 10))
+    screen.blit(opening_surface, (10, board_size + eval_bar_height + 10))
 
     # Display important game information
     game_status_text = ""
@@ -147,9 +164,13 @@ def draw_board(selected_square=None, dragging_piece=None, mouse_pos=None, possib
 
     if game_status_text:
         status_surface = font.render(game_status_text, True, (255, 0, 0))
-        screen.blit(status_surface, (10, BOARD_SIZE + eval_bar_height + 50))
+        screen.blit(status_surface, (10, board_size + eval_bar_height + 50))
 
     pygame.display.flip()
+
+
+# Initialize opening move index
+opening_index = 0  # Index for the current move within the selected line 
 
 # Main game loop
 running = True
@@ -160,7 +181,7 @@ possible_moves = None
 board_needs_update = False
 
 def handle_stockfish_move():
-    with BOARD_LOCK:
+    with board_lock:
         if board.turn != chess.BLACK:
             print("It's not Black's turn, returning early.")
             return  # Stockfish should only move for Black
@@ -204,14 +225,14 @@ def process_player_move(uci_move):
 
     move = chess.Move.from_uci(uci_move)
 
-    with BOARD_LOCK:
+    with board_lock:
 
         if board.turn != chess.WHITE:
             print("It's not White's turn, returning early.")
             return  # Only process the player's move if it's White's turn
 
-        if opening_index < len(SELECTED_LINE['moves']):
-            expected_move = SELECTED_LINE['moves'][opening_index]
+        if opening_index < len(selected_line['moves']):
+            expected_move = selected_line['moves'][opening_index]
 
             if uci_move == expected_move:
                 board.push(chess.Move.from_uci(uci_move))
@@ -224,8 +245,8 @@ def process_player_move(uci_move):
                 board_surface = render_board_surface()
                 draw_board(selected_square)
 
-                if opening_index < len(SELECTED_LINE['moves']):
-                    expected_move = SELECTED_LINE['moves'][opening_index]
+                if opening_index < len(selected_line['moves']):
+                    expected_move = selected_line['moves'][opening_index]
                     board.push_uci(expected_move)
                     opening_index += 1
 
@@ -265,6 +286,7 @@ def process_player_move(uci_move):
             else:
                 print(f"Move {uci_move} is illegal. Ignoring.")
 
+
 dragging = False
 clicking = False  # New flag to distinguish between clicking and dragging
 dragged_piece = None
@@ -283,9 +305,9 @@ while running:
         elif event.type == pygame.MOUSEBUTTONDOWN:
             # Start the click action
             x, y = event.pos
-            if MARGIN <= x < SIZE[0] - MARGIN and MARGIN <= y < BOARD_SIZE - MARGIN:
-                col = int((x - MARGIN) // SQUARE_SIZE)
-                row = int(7 - (y - MARGIN) // SQUARE_SIZE)
+            if margin <= x < size[0] - margin and margin <= y < board_size - margin:
+                col = int((x - margin) // square_size)
+                row = int(7 - (y - margin) // square_size)
                 square = chess.square(col, row)
 
                 piece = board.piece_at(square)
@@ -321,8 +343,8 @@ while running:
             if dragging:
                 # Calculate the destination square
                 x, y = event.pos
-                col = int((x - MARGIN) // SQUARE_SIZE)
-                row = int(7 - (y - MARGIN) // SQUARE_SIZE)
+                col = int((x - margin) // square_size)
+                row = int(7 - (y - margin) // square_size)
                 destination_square = chess.square(col, row)
 
                 move = chess.Move(dragged_piece, destination_square)
@@ -336,8 +358,8 @@ while running:
             elif clicking and selected_square is not None:
                 # Handle click-to-move when releasing the mouse button
                 x, y = event.pos
-                col = int((x - MARGIN) // SQUARE_SIZE)
-                row = int(7 - (y - MARGIN) // SQUARE_SIZE)
+                col = int((x - margin) // square_size)
+                row = int(7 - (y - margin) // square_size)
                 target_square = chess.square(col, row)
 
                 if target_square in possible_moves:
