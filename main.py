@@ -20,6 +20,9 @@ from config import (
     SELECTED_OPENING,
     SCALING_FACTOR,
 )
+from PIL import Image
+from io import BytesIO
+from xml.etree import ElementTree as ET
 
 # Initialize other global variables
 white_eval = None
