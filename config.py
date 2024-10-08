@@ -20,7 +20,7 @@ MARGIN = (BOARD_SIZE - BOARD_SIZE * SCALING_FACTOR) / 2
 SQUARE_SIZE = (BOARD_SIZE * SCALING_FACTOR) / 8
 
 # Stockfish configuration
-STOCKFISH_PATH = r"C:\Users\silvan.hegner\Downloads\stockfish-windows-x86-64-avx2\stockfish\stockfish-windows-x86-64-avx2.exe"  # Set the correct path to your Stockfish binary
+STOCKFISH_PATH = r"path/to/stockfish"  # Set the correct path to your Stockfish binary
 STOCKFISH_SKILL_LEVEL = 12  # You can adjust the skill level
 
 # Select opening before loading the main game
