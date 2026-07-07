@@ -10,30 +10,24 @@ This is a chess opening trainer that supports 4 openings with 5 lines each. Afte
 - Opening and line selection interface
 
 ## Requirements
-- Python 3.8 or higher
+- [uv](https://docs.astral.sh/uv/) (manages Python and dependencies)
 - Stockfish chess engine (you need to provide the path to your Stockfish binary in config.py)
 
 ## Setup
 
-1. Create a Python virtual environment:
+1. Install dependencies (uv creates the virtual environment automatically):
 ```bash
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+uv sync
 ```
 
-2. Install the required packages:
-```bash
-pip install -r requirements.txt
-```
-
-3. Edit `config.py` and set the path to your Stockfish binary:
+2. Edit `config.py` and set the path to your Stockfish binary:
 ```python
 STOCKFISH_PATH = "/path/to/your/stockfish"
 ```
 
-4. Run the program:
+3. Run the program:
 ```bash
-python main.py
+uv run python main.py
 ```
 
 ## Controls
@@ -46,4 +40,15 @@ python main.py
 - For macOS: No additional system packages required
 - For Windows: No additional system packages required
 
-The program now uses PyQt5 for the interface, which provides better cross-platform compatibility and performance compared to the previous Pygame implementation. 
+The program now uses PyQt5 for the interface, which provides better cross-platform compatibility and performance compared to the previous Pygame implementation.
+
+## Troubleshooting
+
+### `qt.qpa.plugin: Could not find the Qt platform plugin "cocoa" in ""`
+
+This means the `.venv`'s PyQt5 install is corrupted or partial (e.g. a plugin file like `libqcocoa.dylib` or `QtCore.abi3.so` is missing or was extracted inconsistently). Rebuild the virtual environment from scratch, bypassing uv's cache in case that's corrupted too:
+
+```bash
+rm -rf .venv
+uv sync --reinstall --no-cache
+```
